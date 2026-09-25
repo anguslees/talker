@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#101415">
+    <title>Talker / Voice Console</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/styles.css">
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Talker home"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>talker<span class="brand-period">.</span></a>
+        <span class="topbar-label">YOUR PERSONAL VOICE CONSOLE</span>
+        <button class="settings-toggle" id="settings-toggle" type="button" aria-expanded="false" aria-controls="settings-panel"><span aria-hidden="true">&#9881;</span> Session details</button>
+      </header>
+
+      <section class="settings-panel" id="settings-panel" aria-labelledby="settings-heading" hidden>
+        <h2 id="settings-heading">Session details</h2>
+        <dl><div><dt>Model</dt><dd id="setting-model">Waiting for connection</dd></div><div><dt>Voice</dt><dd id="setting-voice">Waiting for connection</dd></div><div><dt>Microphone</dt><dd id="setting-input">Not active</dd></div><div><dt>Audio transport</dt><dd>Browser &harr; Gemini direct</dd></div></dl>
+        <p>Voice audio goes directly to Gemini. The server handles temporary credentials and background tools, not microphone audio. Keep this tab open and your laptop awake. Browser background or sleep policies can pause audio.</p>
+      </section>
+
+      <main class="workspace">
+        <div class="conversation-column">
+          <section class="voice-console" aria-labelledby="voice-title" data-state="idle" id="voice-console">
+            <div class="console-heading"><span class="eyebrow">LIVE SPACE / 01</span><span class="connection-pill" id="connection-pill"><span class="status-dot"></span><span id="connection-label">Offline</span></span></div>
+            <div class="voice-focus">
+              <div class="voice-orbit" aria-hidden="true"><div class="orbit-ring outer"></div><div class="orbit-ring inner"></div><div class="voice-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><span class="orbit-point"></span></div>
+              <p class="eyebrow voice-kicker" id="voice-kicker">A LITTLE LESS TYPING.</p>
+              <h1 id="voice-title">Room to think out loud.</h1>
+              <p class="voice-description" id="voice-description">Talk it through. Let the rest run in the background.</p>
+            </div>
+            <div class="voice-controls">
+              <button class="button button-primary" id="start-button" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M6 10v1a6 6 0 0 0 12 0v-1M12 17v4M9 21h6"></path></svg><span>Start talking</span></button>
+              <button class="button button-secondary" id="mute-button" type="button" aria-pressed="false" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M6 10v1a6 6 0 0 0 12 0v-1M12 17v4M9 21h6"></path><path class="mute-slash" d="m3 3 18 18"></path></svg><span>Mute mic</span></button>
+              <button class="button button-stop" id="stop-button" type="button" disabled><span class="stop-icon" aria-hidden="true"></span>End session</button>
+            </div>
+            <div class="console-footer"><span><span class="tiny-dot" id="mic-dot"></span><span id="mic-label">Microphone off</span></span><span class="session-clock" id="session-clock">00:00</span><span id="audio-label">16K IN / 24K OUT</span></div>
+          </section>
+
+          <div class="status-message" id="status-message" role="status" aria-live="polite" hidden></div>
+          <div class="error-message" id="error-message" role="alert" hidden></div>
+
+          <section class="transcript-section" aria-labelledby="transcript-heading">
+            <div class="section-heading"><h2 id="transcript-heading">Conversation <span class="section-index">/ LIVE TRANSCRIPT</span></h2><button class="text-button" id="clear-transcript" type="button">Clear</button></div>
+            <div class="transcript" id="transcript" role="log" aria-label="Conversation transcript" aria-live="polite" aria-relevant="additions text" tabindex="0"><div class="transcript-empty" id="transcript-empty"><span class="empty-glyph" aria-hidden="true">&ldquo;</span><p>Your conversation lands here.</p><span>Start a session and say what is on your mind.</span></div></div>
+            <form class="text-composer" id="text-form"><label class="sr-only" for="text-input">Message Talker</label><input id="text-input" name="message" type="text" maxlength="4000" placeholder="Or put a thought into words..." autocomplete="off" disabled><button id="send-button" type="submit" aria-label="Send message" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 7-7 7 7M12 5v15"></path></svg></button></form>
+          </section>
+        </div>
+
+        <aside class="background-column" aria-labelledby="background-heading">
+          <div class="sidebar-heading"><span class="eyebrow">WORKING ALONGSIDE YOU</span><h2 id="background-heading">In the background<span class="amber-period">.</span></h2><p>The conversation keeps moving.<br>Your tasks do, too.</p></div>
+          <section class="notifications-section" aria-labelledby="notifications-heading"><div class="section-heading"><h3 id="notifications-heading">Updates</h3><span class="count-badge" id="notification-count">0</span></div><div class="notifications" id="notifications" aria-live="polite"><p class="sidebar-empty" id="notifications-empty">A quiet place for things worth knowing.</p></div></section>
+          <section class="tasks-section" aria-labelledby="tasks-heading"><div class="section-heading"><h3 id="tasks-heading">Tasks</h3><span class="count-badge" id="task-count">0</span></div><div class="tasks" id="tasks"><div class="tasks-empty" id="tasks-empty"><span class="task-placeholder" aria-hidden="true"><i></i><i></i><i></i></span><p>Nothing on the go. Yet.</p><span>Ask Talker to take something off your plate.</span></div></div></section>
+          <div class="sidebar-footnote"><span class="tiny-dot amber"></span><p>Ending a voice session stops the mic.<br>Background tasks keep running.</p></div>
+        </aside>
+      </main>
+      <footer class="page-footer"><span>LESS FRICTION. MORE FLOW.</span><span>Browser &harr; Gemini <span class="footer-slash">/</span> DIRECT AUDIO</span></footer>
+    </div>
+  </body>
+</html>

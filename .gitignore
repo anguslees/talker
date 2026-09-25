@@ -1,0 +1,7 @@
+/talker
+/.env
+/.env.*
+!/.env.example
+/data/
+*.test
+coverage.out
