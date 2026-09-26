@@ -4,7 +4,8 @@ import { DirectLive } from "./live.js";
 const $ = id => document.getElementById(id);
 const ui = Object.fromEntries([
   "voice-console", "voice-title", "voice-description", "voice-kicker", "connection-label",
-  "start-button", "mute-button", "stop-button", "mic-dot", "mic-label", "session-clock",
+  "session-button", "session-button-label", "activity-button", "activity-label", "mic-dot", "mic-label", "session-clock",
+  "activity-slot", "pip-button",
   "setting-model", "setting-voice", "setting-input", "status-message", "error-message",
   "transcript", "transcript-empty", "text-input", "send-button", "notifications",
   "notification-count", "tasks", "task-count",
@@ -18,6 +19,8 @@ const notifications = new Map();
 const dismissed = new Set();
 const drafts = new Map();
 let session = null;
+let pipWindow = null;
+let pipRequest = 0;
 let taskRevision = 0;
 let notificationRevision = 0;
 let snapshotPending = false;
@@ -58,15 +61,21 @@ function renderState() {
     }
   }
   ui["voice-console"].dataset.state = state;
+  if (pipWindow) pipWindow.document.body.dataset.state = state;
   ui["voice-title"].textContent = title;
   ui["voice-description"].textContent = description;
   ui["voice-kicker"].textContent = kicker;
   ui["connection-label"].textContent = connection;
-  ui["start-button"].disabled = !!s;
-  ui["stop-button"].disabled = !s;
-  ui["mute-button"].disabled = !connected;
-  ui["mute-button"].setAttribute("aria-pressed", String(!!s?.muted));
-  ui["mute-button"].querySelector("span").textContent = s?.muted ? "Unmute mic" : "Mute mic";
+  ui["session-button"].setAttribute("aria-pressed", String(!!s));
+  ui["session-button-label"].textContent = s ? "Stop talking" : "Start talking";
+  ui["session-button"].title = s ? "Stop talking and turn off the microphone" : "Start a voice session";
+  const activity = { idle: "Stopped", connecting: connection, speaking: "Talker speaking", muted: "Mic muted", hearing: "Hearing you", thinking: "Thinking", listening: "Listening" }[state];
+  const action = s ? (s.muted ? "Unmute mic" : "Mute mic") : "Start talking";
+  ui["activity-label"].textContent = state === "speaking" && s.muted ? "Speaking / muted" : activity;
+  ui["activity-button"].disabled = !!s && !connected;
+  ui["activity-button"].setAttribute("aria-pressed", String(!!s?.muted));
+  ui["activity-button"].setAttribute("aria-label", `${ui["activity-label"].textContent}. ${connected || !s ? action : "Microphone paused"}`);
+  ui["activity-button"].title = s ? `${activity}. ${connected ? `Click to ${action.toLowerCase()}. ` : ""}Press Escape to stop talking.` : "Stopped. Click to start talking.";
   ui["mic-label"].textContent = connected ? (s.muted ? "Microphone muted" : "Microphone on") : s ? "Microphone paused" : "Microphone off";
   ui["mic-dot"].classList.toggle("active", connected && !s.muted);
   ui["text-input"].disabled = !connected;
@@ -76,6 +85,56 @@ function renderState() {
     button.disabled = !s?.live?.controlReady || pending;
     button.textContent = pending ? "Confirming..." : "Mark read";
     button.title = s?.live?.controlReady ? "Mark this update as read" : "Start a session to mark this update as read";
+  }
+}
+
+function renderPiP() {
+  const open = !!pipWindow;
+  ui["voice-console"].dataset.pip = String(open);
+  ui["pip-button"].setAttribute("aria-expanded", String(open));
+  ui["pip-button"].setAttribute("aria-label", open ? "Return widget" : "Pop out widget");
+  ui["pip-button"].title = open ? "Return the activity widget to this window" : "Open the activity widget in an always-on-top window";
+}
+
+async function togglePiP() {
+  if (pipWindow) {
+    pipWindow.close();
+    return;
+  }
+  if (!window.documentPictureInPicture?.requestWindow || ui["pip-button"].disabled) return;
+  const request = ++pipRequest;
+  ui["pip-button"].disabled = true;
+  let popup;
+  try {
+    popup = await window.documentPictureInPicture.requestWindow({ width: 240, height: 240 });
+    if (request !== pipRequest || popup.closed) {
+      popup.close();
+      return;
+    }
+    pipWindow = popup;
+    popup.addEventListener("pagehide", () => {
+      if (pipWindow !== popup) return;
+      ui["activity-slot"].append(ui["activity-button"]);
+      pipWindow = null;
+      renderPiP();
+    }, { once: true });
+    popup.document.title = "Talker";
+    popup.document.documentElement.lang = "en";
+    const stylesheet = popup.document.createElement("link");
+    stylesheet.rel = "stylesheet";
+    stylesheet.href = new URL("/styles.css", window.location.href).href;
+    popup.document.head.append(stylesheet);
+    popup.document.body.className = "pip-widget";
+    popup.document.body.dataset.state = ui["voice-console"].dataset.state;
+    // Move only the control; audio and transport stay owned by the parent window.
+    popup.document.body.append(ui["activity-button"]);
+    popup.document.addEventListener("keydown", stopOnEscape);
+    renderPiP();
+  } catch {
+    popup?.close();
+    if (request === pipRequest) message("error", "The floating widget could not be opened. Try again from the Talker window; your voice session is unchanged.");
+  } finally {
+    ui["pip-button"].disabled = false;
   }
 }
 
@@ -455,18 +514,31 @@ async function refreshSnapshots() {
   } finally { snapshotPending = false; }
 }
 
-$("start-button").addEventListener("click", () => { void startSession(); });
-$("stop-button").addEventListener("click", () => {
+$("session-button").addEventListener("click", () => {
   if (session) closeSession(session, "Session ended. Your microphone is off; background tasks keep running.");
+  else void startSession();
 });
-$("mute-button").addEventListener("click", () => {
+function toggleMute() {
   const s = session;
   if (s?.phase !== "connected") return;
   s.muted = !s.muted;
   setCapture(s, !s.muted);
   s.live.setMuted(s.muted);
   renderState();
+}
+$("activity-button").addEventListener("click", () => {
+  if (session) toggleMute();
+  else void startSession();
 });
+function stopOnEscape(event) {
+  if (event.key === "Escape" && session) {
+    event.preventDefault();
+    closeSession(session, "Session ended. Your microphone is off; background tasks keep running.");
+  }
+}
+$("voice-console").addEventListener("keydown", stopOnEscape);
+ui["pip-button"].hidden = !window.isSecureContext || !window.documentPictureInPicture?.requestWindow;
+ui["pip-button"].addEventListener("click", () => { void togglePiP(); });
 $("text-form").addEventListener("submit", event => {
   event.preventDefault();
   const text = ui["text-input"].value.trim();
@@ -495,9 +567,15 @@ document.addEventListener("visibilitychange", () => {
     message("status", "Talker can listen while you work in another tab. Keep this tab open and your laptop awake; browser background or sleep policies can pause audio.");
   }
 });
-window.addEventListener("pagehide", () => { if (session) closeSession(session); });
+window.addEventListener("pagehide", () => {
+  pipRequest++;
+  pipWindow?.close();
+  if (session) closeSession(session);
+});
 window.addEventListener("offline", () => { if (session) fail(session, new Error("The network went offline. Your microphone is off. Start again after reconnecting.")); });
 
+renderPiP();
+renderState();
 void getJSON("/api/config").then(data => {
   if (session) return;
   if (data.model) ui["setting-model"].textContent = clip(data.model, 200);

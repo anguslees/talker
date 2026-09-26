@@ -5,10 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="color-scheme" content="dark">
     <meta name="theme-color" content="#101415">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Talker">
     <title>Talker / Voice Console</title>
-    <link rel="icon" href="data:,">
+    <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
     <link rel="stylesheet" href="/styles.css">
     <script type="module" src="/app.js"></script>
+    <script type="module" src="/pwa.js"></script>
   </head>
   <body>
     <div class="shell">
@@ -27,17 +32,23 @@
       <main class="workspace">
         <div class="conversation-column">
           <section class="voice-console" aria-labelledby="voice-title" data-state="idle" id="voice-console">
-            <div class="console-heading"><span class="eyebrow">LIVE SPACE / 01</span><span class="connection-pill" id="connection-pill"><span class="status-dot"></span><span id="connection-label">Offline</span></span></div>
+            <div class="console-heading">
+              <span class="eyebrow">LIVE SPACE / 01</span>
+              <div class="console-status">
+                <span class="connection-pill" id="connection-pill"><span class="status-dot"></span><span id="connection-label">Offline</span></span>
+                <button class="pip-toggle" id="pip-button" type="button" aria-expanded="false" aria-label="Pop out widget" title="Open the activity widget in an always-on-top window" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M12 12h7v6h-7z"></path><path class="pip-out" d="M6 7l4 4M6 11h4V7"></path><path class="pip-back" d="M10 11 6 7M6 11V7h4"></path></svg></button>
+              </div>
+            </div>
             <div class="voice-focus">
-              <div class="voice-orbit" aria-hidden="true"><div class="orbit-ring outer"></div><div class="orbit-ring inner"></div><div class="voice-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><span class="orbit-point"></span></div>
+              <div id="activity-slot">
+              <button class="voice-orbit" id="activity-button" type="button" aria-label="Stopped. Start talking" aria-pressed="false" title="Stopped. Click to start talking."><span class="orbit-ring outer" aria-hidden="true"></span><span class="orbit-ring inner" aria-hidden="true"></span><span class="voice-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="orbit-point" aria-hidden="true"></span><span class="orbit-state" id="activity-label" aria-hidden="true">Stopped</span><svg class="orbit-mic" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M6 10v1a6 6 0 0 0 12 0v-1M12 17v4M9 21h6"></path><path class="mute-slash" d="m3 3 18 18"></path></svg></button>
+              </div>
               <p class="eyebrow voice-kicker" id="voice-kicker">A LITTLE LESS TYPING.</p>
               <h1 id="voice-title">Room to think out loud.</h1>
               <p class="voice-description" id="voice-description">Talk it through. Let the rest run in the background.</p>
             </div>
             <div class="voice-controls">
-              <button class="button button-primary" id="start-button" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M6 10v1a6 6 0 0 0 12 0v-1M12 17v4M9 21h6"></path></svg><span>Start talking</span></button>
-              <button class="button button-secondary" id="mute-button" type="button" aria-pressed="false" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M6 10v1a6 6 0 0 0 12 0v-1M12 17v4M9 21h6"></path><path class="mute-slash" d="m3 3 18 18"></path></svg><span>Mute mic</span></button>
-              <button class="button button-stop" id="stop-button" type="button" disabled><span class="stop-icon" aria-hidden="true"></span>End session</button>
+              <button class="button button-primary" id="session-button" type="button" aria-pressed="false"><svg class="start-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M6 10v1a6 6 0 0 0 12 0v-1M12 17v4M9 21h6"></path></svg><span class="stop-icon" aria-hidden="true"></span><span id="session-button-label">Start talking</span></button>
             </div>
             <div class="console-footer"><span><span class="tiny-dot" id="mic-dot"></span><span id="mic-label">Microphone off</span></span><span class="session-clock" id="session-clock">00:00</span><span id="audio-label">16K IN / 24K OUT</span></div>
           </section>

@@ -17,9 +17,9 @@ class Element {
   set textContent(value) { this._text = String(value); this.children = []; }
   get textContent() { return this._text + this.children.map(child => child.textContent).join(""); }
   set innerHTML(_) { throw new Error("Untrusted HTML must never be inserted"); }
-  append(...children) { for (const child of children) { child.parent = this; this.children.push(child); } }
+  append(...children) { for (const child of children) { child.remove(); child.parent = this; this.children.push(child); } }
   replaceChildren(...children) { this.children = []; this.append(...children); }
-  remove() { this.parent.children = this.parent.children.filter(child => child !== this); }
+  remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); this.parent = null; }
   setAttribute(key, value) { this.attributes[key] = value; }
   addEventListener(type, listener) { this.listeners[type] = listener; }
   emit(type, event = {}) { this.listeners[type]?.({ currentTarget: this, preventDefault() {}, ...event }); }
@@ -40,10 +40,22 @@ async function browser(t, options = {}) {
     if (!elements.has(id)) elements.set(id, new Element());
     return elements.get(id);
   };
-  get("mute-button").append(new Element("span"));
+  get("activity-slot").append(get("activity-button"));
+  get("activity-button").append(get("activity-label"));
   get("transcript").append(get("transcript-empty"));
   const document = { getElementById: get, createElement: tag => new Element(tag), visibilityState: "visible", listeners: {}, addEventListener(type, listener) { this.listeners[type] = listener; } };
-  const env = { get, contexts: [], sockets: [], microphones: [], players: [], captureRequests: [], operations: [], timers: new Map() };
+  const env = { get, contexts: [], sockets: [], microphones: [], players: [], captureRequests: [], operations: [], timers: new Map(), popups: [], pipRequests: [] };
+  env.popup = () => {
+    const popup = {
+      document: { createElement: tag => new Element(tag), documentElement: new Element("html"), head: new Element("head"), body: new Element("body"), listeners: {}, addEventListener(type, listener) { this.listeners[type] = listener; } },
+      listeners: {},
+      addEventListener(type, listener) { this.listeners[type] = listener; },
+      closed: false,
+      close() { if (!this.closed) { this.closed = true; this.listeners.pagehide?.(); } },
+    };
+    env.popups.push(popup);
+    return popup;
+  };
   env.flushes = () => env.players[0]?.controls.filter(d => d.type === "flush").length ?? 0;
   env.pushes = () => env.players[0]?.controls.filter(d => d.type === "push").length ?? 0;
   env.document = document;
@@ -91,7 +103,7 @@ async function browser(t, options = {}) {
   }
   const globals = {
     document,
-    window: { isSecureContext: true, AudioContext: Context, AudioWorkletNode: Microphone, WebSocket: Socket, location: { href: "http://localhost:8080/", protocol: "http:" }, addEventListener() {} },
+    window: { isSecureContext: true, AudioContext: Context, AudioWorkletNode: Microphone, WebSocket: Socket, location: { href: "http://localhost:8080/", protocol: "http:" }, listeners: {}, addEventListener(type, listener) { this.listeners[type] = listener; } },
     navigator: { mediaDevices: { getUserMedia: constraints => { env.captureRequests.push(constraints); return options.capture ? options.capture(env) : Promise.resolve(env.stream); } } },
     AudioWorkletNode: Microphone,
     WebSocket: Socket,
@@ -104,13 +116,21 @@ async function browser(t, options = {}) {
     clearTimeout: id => env.timers.delete(id),
     clearInterval: id => env.timers.delete(id),
   };
+  env.window = globals.window;
+  if (options.pip) globals.window.documentPictureInPicture = {
+    requestWindow: optionsRequested => {
+      env.pipRequests.push(optionsRequested);
+      return typeof options.pip === "function" ? options.pip(env) : Promise.resolve(env.popup());
+    },
+  };
   const originals = new Map();
   for (const [name, value] of Object.entries(globals)) {
     originals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
     Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
   }
   t.after(async () => {
-    get("stop-button").emit("click");
+    if (get("session-button").attributes["aria-pressed"] === "true") get("session-button").emit("click");
+    for (const popup of env.popups) popup.close();
     await settle();
     for (const [name, descriptor] of originals) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);
@@ -119,8 +139,8 @@ async function browser(t, options = {}) {
   });
   await import(`./assets/app.js?test=${++caseID}`);
   await settle();
-  env.start = async () => {
-    get("start-button").emit("click");
+  env.start = async (button = "session-button") => {
+    get(button).emit("click");
     await settle();
     env.sockets.at(-1).ready();
     await settle();
@@ -132,7 +152,7 @@ async function browser(t, options = {}) {
 
 test("browser resumes audio in the click gesture and waits for control and Google setup before capture", async t => {
   const env = await browser(t);
-  env.get("start-button").emit("click");
+  env.get("session-button").emit("click");
   assert.deepEqual(env.operations, ["resume"]);
   await settle();
   assert.equal(env.captureRequests.length, 0);
@@ -147,7 +167,7 @@ test("browser resumes audio in the click gesture and waits for control and Googl
   assert.deepEqual(env.captureRequests[0].audio, { channelCount: { ideal: 1 }, echoCancellation: true, noiseSuppression: true, autoGainControl: true });
   assert.equal(env.get("connection-label").textContent, "Live / direct");
   assert.match(env.get("setting-input").textContent, /44,100/);
-  env.get("stop-button").emit("click");
+  env.get("session-button").emit("click");
   assert.equal(env.track.stops, 1);
   assert.equal(env.contexts[0].state, "closed");
   assert.equal(env.microphones[0].port.closed, true);
@@ -158,7 +178,7 @@ test("stopping during microphone permission closes late-arriving tracks without 
   let allow;
   const env = await browser(t, { capture: () => new Promise(resolve => { allow = resolve; }) });
   await env.start();
-  env.get("stop-button").emit("click");
+  env.get("session-button").emit("click");
   allow(env.stream);
   await settle();
   assert.equal(env.track.stops, 1);
@@ -173,7 +193,78 @@ test("microphone permission failure releases the connection and requires an expl
   assert.equal(env.sockets[0].closed, true);
   assert.equal(env.contexts[0].state, "closed");
   assert.equal(env.sockets.length, 2);
-  assert.equal(env.get("start-button").disabled, false);
+  assert.equal(env.get("session-button").attributes["aria-pressed"], "false");
+  assert.equal(env.get("session-button-label").textContent, "Start talking");
+});
+
+test("session toggle reflects stopped, connecting, connected, and stopped again", async t => {
+  const env = await browser(t);
+  const toggle = env.get("session-button");
+  const label = env.get("session-button-label");
+  const activity = env.get("activity-button");
+  assert.equal(toggle.attributes["aria-pressed"], "false");
+  assert.equal(label.textContent, "Start talking");
+  assert.equal(env.get("voice-console").dataset.state, "idle");
+  assert.equal(env.get("activity-label").textContent, "Stopped");
+  assert.equal(activity.disabled, false);
+
+  toggle.emit("click");
+  assert.equal(toggle.attributes["aria-pressed"], "true");
+  assert.equal(label.textContent, "Stop talking");
+  assert.equal(env.get("voice-console").dataset.state, "connecting");
+  assert.equal(activity.disabled, true);
+  toggle.emit("click");
+  await settle();
+  assert.equal(env.contexts[0].state, "closed");
+  assert.equal(env.sockets.length, 0, "cancellation before resume opens no connections");
+  assert.equal(toggle.attributes["aria-pressed"], "false");
+
+  await env.start();
+  assert.equal(env.get("voice-console").dataset.state, "listening");
+  assert.equal(label.textContent, "Stop talking");
+  assert.equal(activity.disabled, false);
+  toggle.emit("click");
+  assert.equal(label.textContent, "Start talking");
+  assert.equal(env.get("activity-label").textContent, "Stopped");
+  assert.equal(env.track.stops, 1);
+});
+
+test("activity widget starts, mutes, and unmutes without interrupting playback", async t => {
+  const env = await browser(t);
+  const activity = env.get("activity-button");
+  await env.start("activity-button");
+  assert.equal(env.get("activity-label").textContent, "Listening");
+  env.microphones[0].frame({ speaking: true });
+  assert.equal(env.get("voice-console").dataset.state, "hearing");
+  assert.equal(env.get("activity-label").textContent, "Hearing you");
+
+  activity.emit("click");
+  assert.equal(env.track.enabled, false);
+  assert.equal(activity.attributes["aria-pressed"], "true");
+  assert.equal(env.get("mic-label").textContent, "Microphone muted");
+  assert.equal(env.get("voice-console").dataset.state, "muted");
+  assert.equal(env.get("activity-label").textContent, "Mic muted");
+  assert.deepEqual(env.sockets[1].sent.at(-1), { realtimeInput: { audioStreamEnd: true } });
+
+  env.sockets[1].receive(audioMessage());
+  await settle();
+  assert.equal(env.get("voice-console").dataset.state, "speaking");
+  assert.equal(env.get("activity-label").textContent, "Speaking / muted");
+  assert.match(activity.attributes["aria-label"], /Unmute mic/);
+  activity.emit("click");
+  assert.equal(env.track.enabled, true);
+  assert.equal(activity.attributes["aria-pressed"], "false");
+  assert.equal(env.get("activity-label").textContent, "Talker speaking");
+  assert.equal(env.flushes(), 0);
+  activity.emit("click");
+  activity.emit("click");
+  assert.equal(env.track.enabled, true);
+  assert.equal(env.get("mic-label").textContent, "Microphone on");
+
+  env.get("voice-console").emit("keydown", { key: "Escape" });
+  assert.equal(env.track.stops, 1);
+  assert.equal(env.get("activity-label").textContent, "Stopped");
+  assert.equal(activity.attributes["aria-pressed"], "false");
 });
 
 test("microphone network backpressure fails closed instead of buffering audio", async t => {
@@ -195,12 +286,12 @@ test("mute resets input epochs and signals stream end without stopping model pla
   socket.receive(audioMessage());
   await settle();
   const oldEpoch = mic.controls.at(-1).epoch;
-  env.get("mute-button").emit("click");
+  env.get("activity-button").emit("click");
   assert.equal(env.track.enabled, false);
   assert.equal(mic.controls.at(-1).enabled, false);
   assert.deepEqual(socket.sent.at(-1), { realtimeInput: { audioStreamEnd: true } });
   assert.equal(env.flushes(), 0, "muting the mic must not flush Talker's speech");
-  env.get("mute-button").emit("click");
+  env.get("activity-button").emit("click");
   const sent = socket.sent.length;
   mic.frame({ epoch: oldEpoch });
   assert.equal(socket.sent.length, sent);
@@ -238,6 +329,8 @@ test("GoAway pauses capture visibly, resets playback, and resumes only on setupC
   await settle();
   assert.equal(env.track.enabled, false);
   assert.equal(env.get("connection-label").textContent, "Reconnecting");
+  assert.equal(env.get("activity-button").disabled, true);
+  assert.equal(env.get("session-button-label").textContent, "Stop talking");
   assert.ok(env.flushes() >= 1, "reconnect discards queued speech");
   const count = socket.sent.length;
   env.microphones[0].frame();
@@ -246,6 +339,7 @@ test("GoAway pauses capture visibly, resets playback, and resumes only on setupC
   await settle();
   assert.equal(env.track.enabled, true);
   assert.equal(env.get("connection-label").textContent, "Live / direct");
+  assert.equal(env.get("activity-button").disabled, false);
 });
 
 test("transcript uses text, bounds DOM growth, and acknowledgements require a click", async t => {
@@ -289,4 +383,158 @@ test("switching tabs does not artificially pause microphone capture", async t =>
   assert.equal(env.get("connection-label").textContent, "Live / direct");
   env.microphones[0].frame();
   assert.ok(env.sockets[1].sent.at(-1).realtimeInput.audio);
+});
+
+test("PiP is optional and unsupported browsers keep the widget in the parent", async t => {
+  const env = await browser(t);
+  assert.equal(env.get("pip-button").hidden, true);
+  env.get("pip-button").emit("click");
+  await settle();
+  assert.equal(env.pipRequests.length, 0);
+  assert.equal(env.get("activity-button").parent, env.get("activity-slot"));
+});
+
+test("PiP moves only the activity widget and restores it without restarting audio", async t => {
+  const env = await browser(t, { pip: true });
+  await env.start();
+  const button = env.get("pip-button");
+  const activity = env.get("activity-button");
+  assert.equal(button.hidden, false);
+  button.emit("click");
+  assert.deepEqual(env.pipRequests, [{ width: 240, height: 240 }]);
+  assert.equal(button.disabled, true);
+  await settle();
+  const popup = env.popups[0];
+  assert.equal(activity.parent, popup.document.body);
+  assert.deepEqual(popup.document.body.children, [activity]);
+  assert.equal(env.get("activity-slot").children.length, 0);
+  assert.equal(popup.document.body.className, "pip-widget");
+  assert.equal(popup.document.body.dataset.state, "listening");
+  assert.equal(popup.document.head.children[0].href, "http://localhost:8080/styles.css");
+  assert.equal(popup.document.head.children[0].rel, "stylesheet");
+  assert.equal(button.attributes["aria-expanded"], "true");
+  assert.equal(button.attributes["aria-label"], "Return widget");
+  assert.equal(env.get("voice-console").dataset.pip, "true");
+  assert.equal(env.contexts.length, 1);
+  assert.equal(env.sockets.length, 2);
+
+  activity.emit("click");
+  assert.equal(env.track.enabled, false);
+  assert.equal(popup.document.body.dataset.state, "muted");
+  assert.equal(env.get("mic-label").textContent, "Microphone muted");
+  env.sockets[1].receive(audioMessage());
+  await settle();
+  assert.equal(popup.document.body.dataset.state, "speaking");
+  assert.equal(env.get("activity-label").textContent, "Speaking / muted");
+  activity.emit("click");
+  assert.equal(activity.attributes["aria-pressed"], "false");
+  assert.equal(env.track.enabled, true);
+  assert.equal(env.flushes(), 0);
+
+  popup.close();
+  assert.equal(activity.parent, env.get("activity-slot"));
+  assert.equal(env.get("voice-console").dataset.pip, "false");
+  assert.equal(button.attributes["aria-expanded"], "false");
+  assert.equal(button.attributes["aria-label"], "Pop out widget");
+  assert.equal(env.contexts[0].state, "running");
+  assert.equal(env.track.stops, 0);
+  assert.equal(env.flushes(), 0);
+
+  button.emit("click");
+  await settle();
+  assert.equal(activity.parent, env.popups[1].document.body);
+  button.emit("click");
+  assert.equal(env.popups[1].closed, true);
+  assert.deepEqual(env.get("activity-slot").children, [activity]);
+  assert.equal(env.track.stops, 0);
+});
+
+test("PiP widget can start a stopped session and stop with Escape", async t => {
+  const env = await browser(t, { pip: true });
+  env.get("pip-button").emit("click");
+  await settle();
+  const popup = env.popups[0];
+  assert.equal(popup.document.body.dataset.state, "idle");
+  assert.equal(env.contexts.length, 0);
+  await env.start("activity-button");
+  assert.equal(env.operations[0], "resume");
+  assert.equal(popup.document.body.dataset.state, "listening");
+  popup.document.listeners.keydown({ key: "Escape", preventDefault() {} });
+  assert.equal(env.track.stops, 1);
+  assert.equal(popup.document.body.dataset.state, "idle");
+  assert.equal(popup.closed, false);
+});
+
+test("PiP failures leave the active session and parent widget intact", async t => {
+  const env = await browser(t, { pip: () => Promise.reject(new Error("Permission denied")) });
+  await env.start();
+  env.get("pip-button").emit("click");
+  await settle();
+  assert.match(env.get("error-message").textContent, /floating widget could not be opened/);
+  assert.equal(env.get("pip-button").disabled, false);
+  assert.equal(env.get("pip-button").attributes["aria-expanded"], "false");
+  assert.equal(env.get("activity-button").parent, env.get("activity-slot"));
+  assert.equal(env.track.stops, 0);
+  assert.equal(env.contexts[0].state, "running");
+});
+
+test("PiP requests cannot race or attach a widget after the parent leaves", async t => {
+  let open;
+  const env = await browser(t, { pip: () => new Promise(resolve => { open = resolve; }) });
+  env.get("pip-button").emit("click");
+  env.get("pip-button").emit("click");
+  assert.equal(env.pipRequests.length, 1);
+  env.window.listeners.pagehide();
+  const popup = env.popup();
+  open(popup);
+  await settle();
+  assert.equal(popup.closed, true);
+  assert.equal(env.get("activity-button").parent, env.get("activity-slot"));
+  assert.equal(env.get("pip-button").disabled, false);
+  assert.equal(env.get("pip-button").attributes["aria-expanded"], "false");
+});
+
+test("a PiP window closed before setup leaves the widget in the parent", async t => {
+  const env = await browser(t, { pip: env => {
+    const popup = env.popup();
+    popup.close();
+    return Promise.resolve(popup);
+  } });
+  env.get("pip-button").emit("click");
+  await settle();
+  assert.equal(env.get("activity-button").parent, env.get("activity-slot"));
+  assert.equal(env.get("pip-button").disabled, false);
+  assert.equal(env.get("pip-button").attributes["aria-expanded"], "false");
+});
+
+test("PiP setup failures after moving the widget restore it and permit a retry", async t => {
+  const env = await browser(t, { pip: env => {
+    const popup = env.popup();
+    if (env.popups.length === 1) popup.document.addEventListener = () => { throw new Error("Setup failed"); };
+    return Promise.resolve(popup);
+  } });
+  await env.start();
+  env.get("pip-button").emit("click");
+  await settle();
+  assert.equal(env.popups[0].closed, true);
+  assert.equal(env.get("activity-button").parent, env.get("activity-slot"));
+  assert.equal(env.get("pip-button").attributes["aria-expanded"], "false");
+  assert.equal(env.get("pip-button").disabled, false);
+  assert.equal(env.track.stops, 0);
+  env.get("pip-button").emit("click");
+  await settle();
+  assert.equal(env.get("activity-button").parent, env.popups[1].document.body);
+  assert.equal(env.get("pip-button").attributes["aria-expanded"], "true");
+});
+
+test("parent teardown closes PiP and stops capture", async t => {
+  const env = await browser(t, { pip: true });
+  await env.start();
+  env.get("pip-button").emit("click");
+  await settle();
+  env.window.listeners.pagehide();
+  assert.equal(env.popups[0].closed, true);
+  assert.equal(env.track.stops, 1);
+  assert.equal(env.contexts[0].state, "closed");
+  assert.equal(env.get("activity-button").parent, env.get("activity-slot"));
 });
