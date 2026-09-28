@@ -3,7 +3,7 @@ package tasks
 import (
 	"encoding/json"
 
-	"talker/internal/hermes"
+	"github.com/anguslees/talker/internal/hermes"
 )
 
 // Recent returns bounded previews; Get retains the complete persisted result.

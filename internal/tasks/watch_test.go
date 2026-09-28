@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"talker/internal/hermes"
+	"github.com/anguslees/talker/internal/hermes"
 )
 
 func TestWatchExistingRunNeverAdmitsAndDeduplicatesConcurrentCalls(t *testing.T) {

@@ -16,7 +16,7 @@ import (
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
 
-	"talker/internal/tasks"
+	"github.com/anguslees/talker/internal/tasks"
 )
 
 type callable interface {

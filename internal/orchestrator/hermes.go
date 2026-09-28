@@ -8,8 +8,8 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 
-	"talker/internal/hermes"
-	"talker/internal/tasks"
+	"github.com/anguslees/talker/internal/hermes"
+	"github.com/anguslees/talker/internal/tasks"
 )
 
 // Hermes-side tools operate on the gateway's own state (conversations from every

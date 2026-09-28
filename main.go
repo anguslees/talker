@@ -15,13 +15,13 @@ import (
 	"syscall"
 	"time"
 
-	"talker/internal/config"
-	"talker/internal/hermes"
-	"talker/internal/live"
-	"talker/internal/orchestrator"
-	"talker/internal/server"
-	"talker/internal/tasks"
-	"talker/internal/web"
+	"github.com/anguslees/talker/internal/config"
+	"github.com/anguslees/talker/internal/hermes"
+	"github.com/anguslees/talker/internal/live"
+	"github.com/anguslees/talker/internal/orchestrator"
+	"github.com/anguslees/talker/internal/server"
+	"github.com/anguslees/talker/internal/tasks"
+	"github.com/anguslees/talker/internal/web"
 )
 
 func main() {

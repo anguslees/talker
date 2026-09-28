@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"talker/internal/hermes"
-	"talker/internal/tasks"
+	"github.com/anguslees/talker/internal/hermes"
+	"github.com/anguslees/talker/internal/tasks"
 )
 
 func TestLocalAPIProtectionAndEvents(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -44,7 +45,7 @@ func Parse(args []string, getenv func(string) string, output io.Writer) (Config,
 	fs.StringVar(&cfg.Voice, "voice", env("TALKER_VOICE", "Aoede"), "Gemini prebuilt voice")
 	fs.StringVar(&cfg.Language, "language", env("TALKER_LANGUAGE", "en-US"), "BCP-47 speech language the model must stick to; empty lets it auto-detect")
 	fs.StringVar(&cfg.HermesURL, "hermes-url", getenv("HERMES_URL"), "Hermes API Server base URL, including optional /p/profile prefix")
-	fs.StringVar(&cfg.StatePath, "state", env("TALKER_STATE", "data/tasks.json"), "private persistent task and notification ledger")
+	fs.StringVar(&cfg.StatePath, "state", env("TALKER_STATE", defaultStatePath(getenv)), "private persistent task and notification ledger")
 	fs.StringVar(&cfg.Instruction, "instruction", getenv("TALKER_INSTRUCTION"), "additional voice/personality preferences")
 	fs.StringVar(&cfg.SpeechStart, "speech-start", env("TALKER_SPEECH_START", "low"), "Gemini start-of-speech sensitivity: low ignores clicks and keyboard noise; high catches soft or brief speech")
 	var temp, quiet, prefix string
@@ -79,9 +80,23 @@ func Parse(args []string, getenv func(string) string, output io.Writer) (Config,
 		return cfg, fmt.Errorf("listen address: %w", err)
 	}
 	if cfg.StatePath == "" {
-		return cfg, errors.New("state path is required")
+		return cfg, errors.New("state path is required: set -state, TALKER_STATE, XDG_STATE_HOME or HOME")
 	}
 	return cfg, nil
+}
+
+// defaultStatePath places the ledger in the XDG Base Directory state home. The
+// spec requires relative XDG_STATE_HOME values to be ignored, not resolved.
+func defaultStatePath(getenv func(string) string) string {
+	dir := getenv("XDG_STATE_HOME")
+	if !filepath.IsAbs(dir) {
+		home := getenv("HOME")
+		if !filepath.IsAbs(home) {
+			return ""
+		}
+		dir = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(dir, "talker", "tasks.json")
 }
 
 func FromEnvironment() (Config, error) { return Parse(os.Args[1:], os.Getenv, os.Stderr) }

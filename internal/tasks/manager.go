@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"talker/internal/hermes"
+	"github.com/anguslees/talker/internal/hermes"
 )
 
 var (

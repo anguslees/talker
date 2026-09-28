@@ -9,7 +9,7 @@ import (
 
 // FS contains the console assets in the assets directory.
 //
-//go:embed assets/*
+//go:embed assets
 var FS embed.FS
 
 // Handler serves the console at / and its root-relative assets.

@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"talker/internal/hermes"
+	"github.com/anguslees/talker/internal/hermes"
 )
 
 type fakeHermes struct {

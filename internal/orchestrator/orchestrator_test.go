@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/anguslees/talker/internal/hermes"
+	"github.com/anguslees/talker/internal/tasks"
 	"google.golang.org/genai"
-	"talker/internal/hermes"
-	"talker/internal/tasks"
 )
 
 func TestADKDispatchAndValidation(t *testing.T) {

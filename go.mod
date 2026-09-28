@@ -1,4 +1,4 @@
-module talker
+module github.com/anguslees/talker
 
 go 1.26.6
 

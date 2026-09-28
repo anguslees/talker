@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anguslees/talker/internal/hermes"
+	"github.com/anguslees/talker/internal/tasks"
 	"github.com/gorilla/websocket"
 	"google.golang.org/genai"
-	"talker/internal/hermes"
-	"talker/internal/tasks"
 )
 
 type fakeExecutor struct {

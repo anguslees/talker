@@ -5,6 +5,13 @@ with Gemini Live, hands real work to a [Hermes](https://github.com/NousResearch/
 gateway, and tells you when things finish — during a natural pause, without you
 leaving whatever you were doing.
 
+```sh
+go install github.com/anguslees/talker@latest
+```
+
+The UI is embedded in the binary; see [Running](#running) for the three
+environment variables it needs.
+
 ```
 Mac browser  <══ audio (direct WebSocket) ══>  Gemini Live
      │
@@ -55,7 +62,7 @@ On the devbox:
 export GEMINI_API_KEY=…            # or GEMINI_API_KEY_FILE=/path/to/key
 export HERMES_URL=http://127.0.0.1:8642
 export HERMES_API_KEY=…            # the Hermes API_SERVER_KEY
-go run .
+talker
 ```
 
 Talker listens on `127.0.0.1:8080` by default. Reach it from your laptop either way:
@@ -77,7 +84,7 @@ default loopback bind unless something authenticated sits in front.
 Verify credentials and model access without a browser:
 
 ```sh
-go run . -check
+talker -check
 # INFO Gemini Live check passed model=gemini-3.8-live setup=1.9s first_audio=750ms audio_bytes=132482
 ```
 
@@ -94,7 +101,7 @@ go run . -check
 | `-speech-start` / `TALKER_SPEECH_START` | `low` | Gemini start-of-speech sensitivity. `low` ignores clicks and keyboard noise; `high` catches soft or brief speech at the cost of phantom turns |
 | `-speech-prefix` / `TALKER_SPEECH_PREFIX` | `200ms` | Speech required before Gemini commits a turn. Included retroactively, so it never clips real onsets; transients shorter than this are ignored |
 | `-instruction` / `TALKER_INSTRUCTION` | | Extra personality/preferences appended to the system prompt |
-| `-state` / `TALKER_STATE` | `data/tasks.json` | Durable task/notification ledger (0600) |
+| `-state` / `TALKER_STATE` | `$XDG_STATE_HOME/talker/tasks.json` | Durable task/notification ledger (0600); `XDG_STATE_HOME` defaults to `~/.local/state` |
 | `-hermes-url` / `HERMES_URL` | | Hermes API base, may include `/p/<profile>` |
 | `HERMES_API_KEY` / `HERMES_API_KEY_FILE` | | Hermes bearer key (the gateway's `API_SERVER_KEY`) |
 | `GEMINI_API_KEY` / `GEMINI_API_KEY_FILE` | | Server-side Gemini key |

@@ -7,10 +7,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/anguslees/talker/internal/origin"
+	"github.com/anguslees/talker/internal/tasks"
 	"github.com/gorilla/websocket"
 	"google.golang.org/genai"
-	"talker/internal/origin"
-	"talker/internal/tasks"
 )
 
 type executor interface {

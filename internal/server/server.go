@@ -6,8 +6,8 @@ import (
 	"io"
 	"net/http"
 
-	"talker/internal/origin"
-	"talker/internal/tasks"
+	"github.com/anguslees/talker/internal/origin"
+	"github.com/anguslees/talker/internal/tasks"
 )
 
 type Config struct {
