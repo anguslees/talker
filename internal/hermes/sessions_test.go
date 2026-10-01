@@ -30,24 +30,20 @@ func sessionsServer(t *testing.T) (*httptest.Server, *[]string) {
 			],"limit":5,"offset":0,"has_more":true}`)
 		case r.Method == "GET" && r.URL.Path == "/api/sessions/run_abc":
 			io.WriteString(w, `{"object":"hermes.session","session":{"id":"run_abc","title":"What voices","source":"api_server","started_at":1790347717.79,"message_count":4}}`)
-		case r.Method == "GET" && r.URL.Path == "/api/sessions/run_abc/messages":
-			io.WriteString(w, `{"object":"list","session_id":"run_abc","pagination":{},"data":[
-			  {"role":"user","content":"What voices are available?","timestamp":1790347717.8,"tool_calls":null,"reasoning":"hidden"},
-			  {"role":"assistant","content":"","timestamp":1790347719.1,"tool_calls":[{"id":"call_1"}]},
-			  {"role":"tool","content":"{\"success\":true}","timestamp":1790347719.3,"tool_call_id":"call_1","tool_name":"web_search"},
-			  {"role":"assistant","content":"There are 30 voices, including Aoede and Puck.","timestamp":1790347725.0}
-			]}`)
-		case r.Method == "POST" && r.URL.Path == "/api/sessions":
-			body, _ := io.ReadAll(r.Body)
-			if strings.Contains(string(body), `"title":"taken"`) {
-				w.WriteHeader(400)
-				io.WriteString(w, `{"error":{"message":"Title already in use by session api_x","type":"invalid_request_error","code":"invalid_title"}}`)
+		case r.Method == "GET" && (r.URL.Path == "/api/sessions/run_abc/messages" || r.URL.Path == "/api/sessions/run_compressed/messages"):
+			if r.URL.Query().Get("order") != "latest" {
+				// Hermes pages from the oldest row whenever a limit arrives without order=latest.
+				io.WriteString(w, `{"object":"list","session_id":"run_abc","data":[{"id":1,"role":"user","content":"oldest","timestamp":1}]}`)
 				return
 			}
-			w.WriteHeader(201)
-			io.WriteString(w, `{"object":"hermes.session","session":{"id":"api_1790349962_e6deff79","source":"api_server","title":"untitled","started_at":1790349962.9,"message_count":0}}`)
-		case r.Method == "POST" && r.URL.Path == "/api/sessions/api_1790349962_e6deff79/chat":
-			io.WriteString(w, `{"object":"hermes.session.chat.completion","session_id":"api_1790349962_e6deff79","message":{"role":"assistant","content":"PONG"},"usage":{"input_tokens":29357,"output_tokens":2},"runtime":{"provider":"custom","model":"google/gemini-flash-latest"}}`)
+			// A compressed session reads from its live continuation, whose ID is reported.
+			io.WriteString(w, `{"object":"list","session_id":"run_abc","pagination":{"order":"latest"},"data":[
+			  {"id":53001,"role":"user","content":"What voices are available?","timestamp":1790347717.8,"tool_calls":null,"reasoning":"hidden","finish_reason":null},
+			  {"id":53004,"role":"assistant","content":"","timestamp":1790347719.1,"tool_calls":[{"id":"call_1"}],"finish_reason":"tool_calls"},
+			  {"id":53005,"role":"tool","content":"{\"success\":true}","timestamp":1790347719.3,"tool_call_id":"call_1","tool_name":"web_search","finish_reason":null},
+			  {"id":53009,"role":"assistant","content":"There are 30 voices, including Aoede and Puck.","timestamp":1790347725.0,"finish_reason":"stop"},
+			  {"id":53010,"role":"user","content":[{"type":"text","text":"And this image?"},{"type":"image_url","image_url":{"url":"data:"}}],"timestamp":1790347730.0}
+			]}`)
 		case r.Method == "GET" && r.URL.Path == "/health":
 			io.WriteString(w, `{"status":"ok","platform":"hermes-agent","version":"0.21.4"}`)
 		case r.Method == "GET" && r.URL.Path == "/api/model/options":
@@ -80,18 +76,37 @@ func TestSessionsListSendsRealQueryString(t *testing.T) {
 	}
 }
 
-func TestSessionMessagesKeepOnlySpokenTurns(t *testing.T) {
-	s, _ := sessionsServer(t)
+func TestSessionMessagesPageFromNewestAndFollowCompression(t *testing.T) {
+	s, seen := sessionsServer(t)
 	c, _ := New(s.URL, "test-gateway-key-1234")
-	msgs, err := c.SessionMessages(context.Background(), "run_abc", 40)
+	page, err := c.SessionMessages(context.Background(), "run_compressed", 40, 20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Tool results and empty tool-call turns are dropped; reasoning is never read.
-	if len(msgs) != 2 || msgs[0].Role != "user" || msgs[1].Role != "assistant" || !strings.Contains(msgs[1].Content, "30 voices") {
-		t.Fatalf("filtered messages: %+v", msgs)
+	if (*seen)[0] != "GET /api/sessions/run_compressed/messages?order=latest&limit=40&offset=20" {
+		t.Fatalf("request line %q", (*seen)[0])
 	}
-	if _, err := c.SessionMessages(context.Background(), "../etc", 10); err == nil {
+	if page.SessionID != "run_abc" || len(page.Messages) != 5 {
+		t.Fatalf("page = %+v", page)
+	}
+	stop, image := page.Messages[3], page.Messages[4]
+	if stop.ID != 53009 || stop.FinishReason != "stop" || page.Messages[1].FinishReason != "tool_calls" {
+		t.Fatalf("turn markers lost: %+v", page.Messages)
+	}
+	if image.Content != "And this image?" {
+		t.Fatalf("multimodal content = %q", image.Content)
+	}
+	// Tool results and empty tool-call turns are dropped; reasoning is never read.
+	spoken := Conversational(page.Messages)
+	if len(spoken) != 3 || spoken[0].Role != "user" || !strings.Contains(spoken[1].Content, "30 voices") {
+		t.Fatalf("filtered messages: %+v", spoken)
+	}
+	for _, bad := range [][2]int{{0, 0}, {501, 0}, {10, -1}} {
+		if _, err := c.SessionMessages(context.Background(), "run_abc", bad[0], bad[1]); err == nil {
+			t.Fatalf("page %v must be rejected before any request", bad)
+		}
+	}
+	if _, err := c.SessionMessages(context.Background(), "../etc", 10, 0); err == nil {
 		t.Fatal("path traversal in session ID must be rejected")
 	}
 	_, err = c.GetSession(context.Background(), "nope_missing")
@@ -101,29 +116,11 @@ func TestSessionMessagesKeepOnlySpokenTurns(t *testing.T) {
 	}
 }
 
-func TestChatCreatesUntitledSessionAndReturnsAnswer(t *testing.T) {
-	s, seen := sessionsServer(t)
-	c, _ := New(s.URL, "test-gateway-key-1234")
-	created, err := c.CreateSession(context.Background(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	reply, err := c.Chat(context.Background(), created.ID, "ping")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reply.Content != "PONG" || reply.SessionID != created.ID || reply.Model != "google/gemini-flash-latest" {
-		t.Fatalf("reply %+v", reply)
-	}
-	if (*seen)[1] != "POST /api/sessions/api_1790349962_e6deff79/chat" {
-		t.Fatalf("chat request %q", (*seen)[1])
-	}
-	// Hermes enforces unique titles; that error must propagate, not be masked.
-	if _, err := c.CreateSession(context.Background(), "taken"); err == nil || !strings.Contains(err.Error(), "invalid_title") {
-		t.Fatalf("duplicate title: %v", err)
-	}
-	if _, err := c.Chat(context.Background(), created.ID, "   "); err == nil {
-		t.Fatal("blank input must be rejected locally")
+func TestConversationBoundaries(t *testing.T) {
+	for reason, boundary := range map[string]bool{"new_session": true, "session_reset": true, "branched": true, "compression": false, "agent_close": false, "cli_close": false, "": false} {
+		if IsConversationBoundary(reason) != boundary {
+			t.Errorf("IsConversationBoundary(%q) = %t", reason, !boundary)
+		}
 	}
 }
 

@@ -24,9 +24,11 @@ type record struct {
 }
 
 type ledger struct {
-	Version int               `json:"version"`
-	Tasks   map[string]record `json:"tasks"`
-	Events  []Event           `json:"events"`
+	Version      int                     `json:"version"`
+	Tasks        map[string]record       `json:"tasks"`
+	Events       []Event                 `json:"events"`
+	Conversation *conversation           `json:"conversation,omitempty"`
+	Follows      map[string]followRecord `json:"follows,omitempty"`
 }
 
 func newID(prefix string) (string, error) {
@@ -38,7 +40,7 @@ func newID(prefix string) (string, error) {
 }
 
 func readLedger(path string) (ledger, error) {
-	empty := ledger{Version: 1, Tasks: make(map[string]record), Events: []Event{}}
+	empty := ledger{Version: 1, Tasks: make(map[string]record), Events: []Event{}, Follows: make(map[string]followRecord)}
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return empty, nil
@@ -84,6 +86,17 @@ func readLedger(path string) (ledger, error) {
 	if saved.Events == nil {
 		saved.Events = []Event{}
 	}
+	if c := saved.Conversation; c != nil && (c.ConnectionID == "" || c.Day == "" || (c.SessionID == "" && c.FoundingTask == "")) {
+		return empty, errors.New("task ledger contains an invalid conversation")
+	}
+	for id, rec := range saved.Follows {
+		if id == "" || rec.Follow.ID != id || rec.Follow.SessionID == "" || rec.ConnectionID == "" {
+			return empty, errors.New("task ledger contains an invalid session follow")
+		}
+	}
+	if saved.Follows == nil {
+		saved.Follows = make(map[string]followRecord)
+	}
 	return saved, nil
 }
 
@@ -127,9 +140,16 @@ func writeLedger(path string, state ledger) (bool, error) {
 }
 
 func cloneLedger(state ledger) ledger {
-	copy := ledger{Version: state.Version, Tasks: make(map[string]record, len(state.Tasks)), Events: append([]Event{}, state.Events...)}
+	copy := ledger{Version: state.Version, Tasks: make(map[string]record, len(state.Tasks)), Events: append([]Event{}, state.Events...), Follows: make(map[string]followRecord, len(state.Follows))}
 	for id, rec := range state.Tasks {
 		copy.Tasks[id] = rec
+	}
+	for id, rec := range state.Follows {
+		copy.Follows[id] = rec
+	}
+	if state.Conversation != nil {
+		c := *state.Conversation
+		copy.Conversation = &c
 	}
 	return copy
 }

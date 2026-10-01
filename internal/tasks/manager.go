@@ -39,11 +39,15 @@ type Task struct {
 	UpdatedAt    time.Time        `json:"updated_at"`
 	Approval     *hermes.Approval `json:"approval,omitempty"`
 	PendingSteer json.RawMessage  `json:"pending_steer,omitempty"`
+	// Conversation records how a task relates to the current conversation:
+	// RouteStarted, RouteContinued or RouteSeparate; empty when unrelated.
+	Conversation string `json:"conversation,omitempty"`
 }
 
 type Event struct {
 	ID        string    `json:"id"`
 	TaskID    string    `json:"task_id,omitempty"`
+	SessionID string    `json:"session_id,omitempty"`
 	Title     string    `json:"title"`
 	Body      string    `json:"body"`
 	CreatedAt time.Time `json:"created_at"`
@@ -58,6 +62,13 @@ type Manager struct {
 	cancel    context.CancelFunc
 	closed    bool
 	workers   map[string]chan struct{}
+	followers map[string]bool
+	// inline marks tasks whose caller is waiting to receive the outcome
+	// directly, so no notification is queued for it.
+	inline map[string]bool
+	// changed is closed and replaced after every committed ledger change.
+	changed   chan struct{}
+	now       func() time.Time
 	wg        sync.WaitGroup
 	lock      *os.File
 	closeOnce sync.Once
@@ -97,7 +108,11 @@ func Open(ctx context.Context, client *hermes.Client, path string) (*Manager, er
 		return nil, fmt.Errorf("persist task ledger: %w", err)
 	}
 	root, cancel := context.WithCancel(ctx)
-	m := &Manager{client: client, path: absPath, state: state, ctx: root, cancel: cancel, workers: make(map[string]chan struct{}), lock: lock}
+	m := &Manager{
+		client: client, path: absPath, state: state, ctx: root, cancel: cancel, lock: lock,
+		workers: make(map[string]chan struct{}), followers: make(map[string]bool), inline: make(map[string]bool),
+		changed: make(chan struct{}), now: time.Now,
+	}
 	owned = true
 	m.mu.Lock()
 	if client.Configured() {
@@ -106,12 +121,21 @@ func Open(ctx context.Context, client *hermes.Client, path string) (*Manager, er
 				m.startMonitorLocked(id, nil, false)
 			}
 		}
+		m.startFollowersLocked()
 	}
 	m.mu.Unlock()
 	return m, nil
 }
 
+// Start submits prompt to Hermes. An empty sessionID continues the current
+// conversation, or runs in a separate session while a turn is running there.
+// An explicit sessionID becomes the current conversation, and is refused while
+// a turn is running in it.
 func (m *Manager) Start(ctx context.Context, prompt, sessionID string) (Task, error) {
+	return m.start(ctx, prompt, sessionID, false)
+}
+
+func (m *Manager) start(ctx context.Context, prompt, sessionID string, inline bool) (Task, error) {
 	if !m.client.Configured() {
 		return Task{}, hermes.ErrNotConfigured
 	}
@@ -143,7 +167,24 @@ func (m *Manager) Start(ctx context.Context, prompt, sessionID string) (Task, er
 	if err != nil {
 		return Task{}, err
 	}
-	now := time.Now().UTC()
+	// The target session's newest turn is read before admission, so a turn
+	// another client is running there is not interleaved. An explicit session
+	// must exist and is continued at its live continuation.
+	requested, probed, probe := sessionID, "", (*turnProbe)(nil)
+	running := m.runningSessions(ctx)
+	if requested != "" {
+		p, err := m.probeTurn(ctx, requested)
+		if err != nil {
+			return Task{}, err
+		}
+		probed, probe, sessionID = requested, &p, p.page.SessionID
+	} else if target := m.conversationToProbe(); target != "" {
+		// Unreadable history falls back to what the conversation's follow has seen.
+		if p, err := m.probeTurn(ctx, target); err == nil {
+			probed, probe = target, &p
+		}
+	}
+	now := m.now().UTC()
 	task := Task{ID: id, SessionID: sessionID, Prompt: prompt, Status: "submitting", CreatedAt: now, UpdatedAt: now}
 	first := make(chan admissionResult, 1)
 	m.mu.Lock()
@@ -152,8 +193,21 @@ func (m *Manager) Start(ctx context.Context, prompt, sessionID string) (Task, er
 		return Task{}, ErrClosed
 	}
 	next := cloneLedger(m.state)
+	if requested == "" {
+		task.SessionID, task.Conversation = m.route(&next, id, probed, probe, running, now)
+	} else {
+		if err := m.adopt(&next, requested, *probe, running, now); err != nil {
+			m.mu.Unlock()
+			return Task{}, err
+		}
+		task.Conversation = RouteContinued
+	}
 	next.Tasks[id] = record{Task: task, IdempotencyKey: key, ConnectionID: m.client.Identity(), RetryUntil: now.Add(retention)}
+	if inline {
+		m.inline[id] = true
+	}
 	if err := m.commitLocked(next); err != nil {
+		delete(m.inline, id)
 		m.mu.Unlock()
 		return task, err
 	}
@@ -409,6 +463,9 @@ func (m *Manager) commitLocked(next ledger) error {
 	committed, err := writeLedger(m.path, next)
 	if committed {
 		m.state = next
+		close(m.changed)
+		m.changed = make(chan struct{})
+		m.startFollowersLocked()
 	}
 	if err != nil {
 		return fmt.Errorf("persist task ledger: %w", err)
@@ -457,14 +514,17 @@ func (m *Manager) storeRecordLocked(rec record) error {
 		}
 		rec.ApprovalNotice = rec.Task.Approval.RequestID
 	}
-	if title != "" {
+	// A caller waiting inline receives the outcome directly; an approval request
+	// is always queued so it reaches the user through the notification channel.
+	if title != "" && !(m.inline[id] && finished(rec.Task.Status)) {
 		eventID, err := newID("event_")
 		if err != nil {
 			return err
 		}
 		next.Events = append(next.Events, Event{ID: eventID, TaskID: id, Title: title, Body: body, CreatedAt: time.Now().UTC()})
 	}
-	if exists && reflect.DeepEqual(rec, original) {
+	conversationChanged := m.trackConversation(&next, original.Task, rec.Task)
+	if exists && !conversationChanged && reflect.DeepEqual(rec, original) {
 		return nil
 	}
 	rec.Task.UpdatedAt = time.Now().UTC()

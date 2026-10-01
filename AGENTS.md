@@ -35,6 +35,16 @@ behind an SSH tunnel or authenticating proxy. Read `README.md` for setup.
   `mic-worklet.js` only informs the quiet gate. Tune phantom turns with
   `-speech-start`/`-speech-prefix` (setup.go), never with a client threshold.
   Mute is the one sanctioned pause and sends `audioStreamEnd`.
+- **Every Hermes turn Talker starts is a durable run**, including `ask_hermes`,
+  which waits briefly and then leaves the run to the ordinary monitor. A
+  synchronous `/api/sessions/{id}/chat` outlives the tool-call timeout and
+  leaves an untracked, unapprovable turn writing into the conversation.
+- **Talker follows sessions by their messages, not runs.** Turns added from the
+  Hermes web UI, CLI or chat apps create no run Talker can see. A follow polls
+  the session row and announces each new assistant row with
+  `finish_reason:"stop"`, skipping turns whose user message matches a Talker
+  task's prompt (that task announces itself). Approvals raised in other clients
+  stay in those clients.
 - Same-origin checks honour `X-Forwarded-Host` (`internal/origin`). A Host-must-
   be-localhost check was deliberately removed; do not re-add it.
 
@@ -51,8 +61,22 @@ behind an SSH tunnel or authenticating proxy. Read `README.md` for setup.
   `/api/sessions` under their run ID.
 - Hermes gotchas found against v0.21.4: session titles must be unique (let it
   auto-title); `/v1/skills` returns 500; list endpoints use `{object:"list",
-  data:[…]}`; a synchronous `/chat` turn sends no headers until it finishes, so
-  it runs on the slow HTTP pool (`chatTimeout`), never the JSON pool.
+  data:[…]}`; `/api/sessions/{id}/messages` returns the *oldest* rows whenever
+  `limit` is sent without `order=latest`, and its `session_id` names the live
+  continuation when compression rotates the session. Message `id`s are global
+  insertion order, so they keep increasing across that rotation. A run's
+  session row exists only once its turn starts; until then the session 404s.
+- In-place compaction (Hermes's default) keeps the session ID but re-inserts
+  the carried tail under fresh message IDs with the original timestamps, after
+  a `display_kind:"hidden"` handoff row with empty content. A follow skips
+  hidden rows, treats rows older than the newest it has seen as copies, and
+  remembers recent answer digests.
+- Hermes does not order overlapping turns of one session; their transcript
+  writes interleave. `tasks.Manager` admits one turn per session: an explicit
+  `session_id` is refused, and a conversation request goes to a separate
+  session, while a Talker task writes there (resolved through rotation: a run
+  keeps reporting the session it was admitted to) or the newest user message
+  from another client is under ten minutes old and unanswered.
 - Startup calls `/v1/capabilities` and refuses to run on 401. Before this,
   a wrong key produced a cheerful `hermes=true` and every tool silently failed.
 - The system prompt intentionally keeps replies short; the model will decline

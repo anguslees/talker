@@ -20,10 +20,14 @@ import (
 )
 
 type fakeHermes struct {
+	t                 *testing.T
 	mu                sync.Mutex
 	server            *httptest.Server
 	keys              map[string]string
 	bodies            map[string]string
+	runSessions       map[string]string
+	sessions          map[string]*fakeSession
+	messageID         int64
 	status            string
 	output            string
 	approval          *hermes.Approval
@@ -36,13 +40,118 @@ type fakeHermes struct {
 	ambiguous         int
 	streamUnavailable bool
 	nondurable        bool
-	admissionHook     func(*http.Request, string)
-	signal            chan string
+	// lazySessions leaves a run's session absent until a turn is added, as
+	// Hermes creates it only when the turn starts.
+	lazySessions bool
+	// sessionsDown fails session reads, holding follows at their cursor.
+	sessionsDown  bool
+	admissionHook func(*http.Request, string)
+	signal        chan string
+}
+
+// fakeSession mirrors the rows Hermes v0.21.4 serves for a session. A session
+// with a continuation reads from it, as after rotating compression.
+type fakeSession struct {
+	title        string
+	messages     []map[string]any
+	endedAt      float64
+	endReason    string
+	continuation string
+}
+
+func (f *fakeHermes) session(id string) *fakeSession {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.sessions[id] == nil {
+		f.sessions[id] = &fakeSession{}
+	}
+	return f.sessions[id]
+}
+
+// addTurn stores a user message and, when answer is set, the tool step and
+// final answer that complete the turn.
+func (f *fakeHermes) addTurn(sessionID, user, answer string) {
+	f.addTurnAt(sessionID, user, answer, time.Now())
+}
+
+func (f *fakeHermes) addTurnAt(sessionID, user, answer string, at time.Time) {
+	s := f.session(sessionID)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	add := func(role, content string, finish any) {
+		// Message IDs are global across sessions, as in Hermes.
+		f.messageID += 3
+		s.messages = append(s.messages, map[string]any{"id": f.messageID, "role": role, "content": content, "timestamp": float64(at.UnixMilli()) / 1000, "finish_reason": finish})
+	}
+	if user != "" {
+		add("user", user, nil)
+	}
+	if answer != "" {
+		add("assistant", "", "tool_calls")
+		add("tool", `{"output":"`+strings.Repeat("x", 50)+`"}`, nil)
+		add("assistant", answer, "stop")
+	}
+}
+
+// compact mirrors in-place compaction: the served rows become a hidden
+// handoff stamped now, then the last tail rows re-inserted under new IDs with
+// their original timestamps.
+func (f *fakeHermes) compact(sessionID string, tail int) {
+	s := f.session(sessionID)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.messageID++
+	rows := []map[string]any{{"id": f.messageID, "role": "user", "content": "", "display_kind": "hidden", "timestamp": float64(time.Now().UnixMilli()) / 1000}}
+	for _, row := range s.messages[max(len(s.messages)-tail, 0):] {
+		f.messageID++
+		copied := make(map[string]any, len(row))
+		for k, v := range row {
+			copied[k] = v
+		}
+		copied["id"] = f.messageID
+		rows = append(rows, copied)
+	}
+	s.messages = rows
+}
+
+func (f *fakeHermes) serveSession(w http.ResponseWriter, r *http.Request, parts []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := parts[2]
+	s := f.sessions[id]
+	if f.sessionsDown {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, `{"error":{"message":"unavailable"}}`)
+		return
+	}
+	if s == nil {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprintf(w, `{"error":{"message":"Session not found: %s","code":"session_not_found"}}`, id)
+		return
+	}
+	if len(parts) == 3 {
+		_ = json.NewEncoder(w).Encode(map[string]any{"object": "hermes.session", "session": map[string]any{
+			"id": id, "title": s.title, "message_count": len(s.messages), "ended_at": s.endedAt, "end_reason": s.endReason}})
+		return
+	}
+	for s.continuation != "" && f.sessions[s.continuation] != nil {
+		id, s = s.continuation, f.sessions[s.continuation]
+	}
+	query := r.URL.Query()
+	var limit, offset int
+	fmt.Sscan(query.Get("limit"), &limit)
+	fmt.Sscan(query.Get("offset"), &offset)
+	if query.Get("order") != "latest" {
+		f.t.Error("Hermes returns the oldest messages unless order=latest")
+	}
+	end := max(len(s.messages)-offset, 0)
+	page := s.messages[max(end-limit, 0):end]
+	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "session_id": id, "data": page})
 }
 
 func newFake(t *testing.T) (*fakeHermes, *hermes.Client) {
 	t.Helper()
-	f := &fakeHermes{keys: make(map[string]string), bodies: make(map[string]string), status: "running", signal: make(chan string, 32)}
+	f := &fakeHermes{t: t, keys: make(map[string]string), bodies: make(map[string]string), runSessions: make(map[string]string), sessions: map[string]*fakeSession{"voice-session": {}}, status: "running", signal: make(chan string, 32)}
 	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer secret-key" {
 			t.Error("missing API bearer key")
@@ -75,6 +184,13 @@ func newFake(t *testing.T) (*fakeHermes, *hermes.Client) {
 			if !replay {
 				runID = fmt.Sprintf("run_%d", len(f.keys)+1)
 				f.keys[key], f.bodies[key] = runID, string(body)
+				f.runSessions[runID] = request.SessionID
+				if request.SessionID == "" {
+					f.runSessions[runID] = runID
+				}
+				if f.sessions[f.runSessions[runID]] == nil && !f.lazySessions {
+					f.sessions[f.runSessions[runID]] = &fakeSession{}
+				}
 			} else if f.bodies[key] != string(body) {
 				t.Error("retry changed the admission body")
 			}
@@ -120,6 +236,10 @@ func newFake(t *testing.T) (*fakeHermes, *hermes.Client) {
 			}
 		}
 		parts := strings.Split(strings.Trim(path, "/"), "/")
+		if len(parts) >= 3 && len(parts) <= 4 && parts[0] == "api" && parts[1] == "sessions" && r.Method == http.MethodGet && (len(parts) == 3 || parts[3] == "messages") {
+			f.serveSession(w, r, parts)
+			return
+		}
 		if len(parts) < 3 || parts[0] != "v1" || parts[1] != "runs" {
 			t.Errorf("invented route: %s %s", r.Method, path)
 			w.WriteHeader(http.StatusNotFound)
@@ -129,7 +249,11 @@ func newFake(t *testing.T) (*fakeHermes, *hermes.Client) {
 		defer f.mu.Unlock()
 		if len(parts) == 3 && r.Method == http.MethodGet {
 			f.polls++
-			_ = json.NewEncoder(w).Encode(hermes.Run{Object: "hermes.run", RunID: parts[2], SessionID: "voice-session", Status: f.status, Output: f.output, Approval: f.approval})
+			session := f.runSessions[parts[2]]
+			if session == "" {
+				session = "voice-session"
+			}
+			_ = json.NewEncoder(w).Encode(hermes.Run{Object: "hermes.run", RunID: parts[2], SessionID: session, Status: f.status, Output: f.output, Approval: f.approval})
 			return
 		}
 		if len(parts) == 4 && r.Method == http.MethodPost {
@@ -165,11 +289,15 @@ func newFake(t *testing.T) (*fakeHermes, *hermes.Client) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	t.Cleanup(f.server.Close)
-	client, err := hermes.New(f.server.URL+"/p/voice", "secret-key")
+	client, err := f.clientFor()
 	if err != nil {
 		t.Fatal(err)
 	}
 	return f, client
+}
+
+func (f *fakeHermes) clientFor() (*hermes.Client, error) {
+	return hermes.New(f.server.URL+"/p/voice", "secret-key")
 }
 
 func openTestManager(t *testing.T, client *hermes.Client, path string) *Manager {

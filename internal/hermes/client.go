@@ -18,12 +18,12 @@ import (
 )
 
 const (
-	requestTimeout = 20 * time.Second
-	// A synchronous turn includes any tools Hermes runs before answering.
-	chatTimeout      = 180 * time.Second
+	requestTimeout   = 20 * time.Second
 	maxResponseBytes = 2 << 20
-	maxRequestBytes  = 512 << 10
-	MaxPromptBytes   = 64 << 10
+	// Message pages carry raw tool output and reasoning, each row up to ~200 KB.
+	maxMessagePageBytes = 16 << 20
+	maxRequestBytes     = 512 << 10
+	MaxPromptBytes      = 64 << 10
 )
 
 var ErrNotConfigured = errors.New("Hermes is not configured: set the HTTP API base URL and bearer key")
@@ -63,10 +63,9 @@ func New(baseURL, key string) (*Client, error) {
 	transport.IdleConnTimeout = 90 * time.Second
 	transport.MaxConnsPerHost = 32
 	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	// SSE and blocking chat turns send no headers until Hermes has something to
-	// say, and must not consume the JSON pool's stop and polling slots.
+	// Long-lived SSE streams must not consume the JSON pool's stop and polling slots.
 	slow := transport.Clone()
-	slow.ResponseHeaderTimeout = chatTimeout
+	slow.ResponseHeaderTimeout = streamIdleLimit
 	return &Client{
 		base: u, key: key,
 		http:       &http.Client{Transport: transport, CheckRedirect: noRedirect},
@@ -317,16 +316,11 @@ func (c *Client) request(ctx context.Context, method, path string, body io.Reade
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, body any, headers http.Header, result any) error {
-	return c.doJSONWith(ctx, c.http, requestTimeout, method, path, body, headers, result)
+	return c.doJSONLimit(ctx, method, path, body, headers, result, maxResponseBytes)
 }
 
-// doJSONTimeout serves one blocking agent turn on the slow pool.
-func (c *Client) doJSONTimeout(ctx context.Context, method, path string, body any, headers http.Header, result any, timeout time.Duration) error {
-	return c.doJSONWith(ctx, c.streamHTTP, timeout, method, path, body, headers, result)
-}
-
-func (c *Client) doJSONWith(ctx context.Context, client *http.Client, timeout time.Duration, method, path string, body any, headers http.Header, result any) error {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+func (c *Client) doJSONLimit(ctx context.Context, method, path string, body any, headers http.Header, result any, limit int) error {
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	var reader io.Reader
 	if body != nil {
@@ -349,7 +343,7 @@ func (c *Client) doJSONWith(ctx context.Context, client *http.Client, timeout ti
 	for key, values := range headers {
 		req.Header[key] = values
 	}
-	resp, err := client.Do(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("Hermes request: %w", err)
 	}
@@ -357,12 +351,12 @@ func (c *Client) doJSONWith(ctx context.Context, client *http.Client, timeout ti
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return responseError(resp)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
 	if err != nil {
 		return fmt.Errorf("read Hermes response: %w", err)
 	}
-	if len(data) > maxResponseBytes {
-		return errors.New("Hermes response exceeds 2 MiB limit")
+	if len(data) > limit {
+		return fmt.Errorf("Hermes response exceeds %d MiB limit", limit>>20)
 	}
 	if err := json.Unmarshal(data, result); err != nil {
 		return fmt.Errorf("decode Hermes response: %w", err)

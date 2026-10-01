@@ -115,13 +115,15 @@ The model can call these (all Go ADK `functiontool`s, `NON_BLOCKING`):
 
 | Tool | Effect |
 |---|---|
-| `ask_hermes` | Ask a quick question and wait for the answer (a few seconds); optionally continue an existing session |
+| `ask_hermes` | Ask a quick question and wait up to ~20 s for the answer; a slower answer continues as a background task |
 | `start_task` | Submit longer work as a background run; completion is announced at a quiet moment |
 | `watch_task` | Adopt a run started elsewhere by its ID and announce its completion |
-| `list_tasks`, `get_task` | Inspect tracked tasks (bounded previews / full result) |
+| `list_tasks`, `get_task` | Inspect tracked tasks (bounded previews / full result), the current conversation and followed sessions |
 | `stop_task`, `steer_task` | Ask Hermes to stop a run, or queue extra guidance for it |
 | `answer_approval` | Resolve a Hermes tool-approval prompt with the user's explicit choice |
-| `hermes_sessions`, `hermes_session` | Browse conversations from every source (CLI, chat apps, Talker) and read what one concluded |
+| `hermes_sessions`, `hermes_session` | Browse conversations from every source (CLI, web UI, chat apps, Talker) and read their latest exchanges |
+| `follow_session`, `unfollow_session` | Announce new replies in a session you continue in another Hermes client |
+| `new_conversation` | Start a fresh Hermes conversation for the next request |
 | `hermes_status` | Reachability, version, and the model Hermes is currently routing to |
 | `acknowledge_events` | Dismiss notifications the user says they've heard |
 
@@ -129,6 +131,28 @@ Tool calls the model raises *while reading a background announcement* are
 treated as coming from untrusted data: read-only tools run, anything with side
 effects is refused with an explanation the model can voice. The session keeps
 going.
+
+### Conversations
+
+`ask_hermes` and `start_task` continue one Hermes session, the *current
+conversation*, so Hermes has the transcript and tool results of earlier
+requests. It is created by the first request and ends at 04:00 local time or
+when you ask for a new conversation. Stopping the voice session or long silences
+do not end it.
+
+Hermes does not serialise overlapping turns in one session, so Talker starts a
+turn only in an idle session. A request made while a turn is running in the
+conversation, whether a Talker task or one you started in another Hermes
+client, goes to a separate session without the conversation's context (the
+tool result says so). Continuing a named session with a running turn is
+refused; steer the task instead, or wait for the other client's turn.
+
+The current conversation is followed: replies you get by continuing it in the
+Hermes web UI or CLI are announced too. Talker's own tasks are announced once,
+by the task. `follow_session` does the same for any other session until you
+unfollow it, the session is reset, or it has been quiet for a day. Talker only
+observes those turns. Approvals they raise are answered in the client that
+started them, and stop/steer work only on Talker's own runs.
 
 Deliberately absent: session rename/pin/fork/delete and model locking (voice is
 a poor interface for housekeeping and a dangerous one for destructive actions),
@@ -173,8 +197,9 @@ main.go                  wiring, -check
 internal/config          flags/env
 internal/live            ephemeral-token broker, Live setup, control WebSocket, -check
 internal/orchestrator    Go ADK agent + functiontools; bounded JSON task views
-internal/hermes          Hermes API Server client (runs, SSE, stop/steer/approval)
-internal/tasks           durable ledger, monitors, notifications, Watch/Recent/Pending
+internal/hermes          Hermes API Server client (runs, SSE, stop/steer/approval, sessions)
+internal/tasks           durable ledger, run monitors, notifications, Watch/Ask,
+                         current conversation, session follows
 internal/server          HTTP mux, same-origin + loopback guards, /api/*
 internal/web             embedded UI: app.js (UI), live.js (Gemini + quiet gate),
                          audio.js (resampling, PlaybackQueue), mic-worklet.js,

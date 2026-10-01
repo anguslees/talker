@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"strings"
 	"time"
 
 	"google.golang.org/adk/v2/agent"
@@ -35,7 +36,7 @@ type Orchestrator struct {
 
 type startArgs struct {
 	Prompt    string `json:"prompt" jsonschema:"Complete task or question for Hermes, including relevant conversation context. Ask for sources when searching the web."`
-	SessionID string `json:"session_id,omitempty" jsonschema:"An existing Hermes conversation ID to continue; omit to start independent work."`
+	SessionID string `json:"session_id,omitempty" jsonschema:"A different Hermes session ID to continue; omit to continue the current conversation."`
 }
 
 type idArgs struct {
@@ -64,17 +65,18 @@ type watchArgs struct {
 // taskView is the JSON-native, bounded projection returned to the model. It
 // omits PendingSteer, whose free-form JSON defeats ADK's inferred output schema.
 type taskView struct {
-	ID        string        `json:"id"`
-	RunID     string        `json:"run_id,omitempty"`
-	SessionID string        `json:"session_id,omitempty"`
-	Prompt    string        `json:"prompt"`
-	Status    string        `json:"status"`
-	Output    string        `json:"output,omitempty"`
-	Error     string        `json:"error,omitempty"`
-	CreatedAt string        `json:"created_at"`
-	UpdatedAt string        `json:"updated_at"`
-	Approval  *approvalView `json:"approval,omitempty"`
-	Note      string        `json:"note,omitempty"`
+	ID           string        `json:"id"`
+	RunID        string        `json:"run_id,omitempty"`
+	SessionID    string        `json:"session_id,omitempty"`
+	Prompt       string        `json:"prompt"`
+	Status       string        `json:"status"`
+	Output       string        `json:"output,omitempty"`
+	Error        string        `json:"error,omitempty"`
+	CreatedAt    string        `json:"created_at"`
+	UpdatedAt    string        `json:"updated_at"`
+	Approval     *approvalView `json:"approval,omitempty"`
+	Conversation string        `json:"conversation,omitempty"`
+	Note         string        `json:"note,omitempty"`
 }
 
 type approvalView struct {
@@ -84,9 +86,15 @@ type approvalView struct {
 	Choices     []string `json:"choices,omitempty"`
 }
 
+// Notes explaining a request that could not continue the conversation.
+const (
+	separateNote         = "A task of yours is running in the current conversation, so this started in a separate Hermes session without the conversation's context. If it adjusts that running task, steer it instead."
+	separateExternalNote = "The user has a turn running in the current conversation from another Hermes client, so this started in a separate Hermes session without the conversation's context. That turn cannot be steered from here."
+)
+
 func view(t tasks.Task, outputLimit int) taskView {
 	v := taskView{
-		ID: t.ID, RunID: t.RunID, SessionID: t.SessionID, Status: t.Status,
+		ID: t.ID, RunID: t.RunID, SessionID: t.SessionID, Status: t.Status, Conversation: t.Conversation,
 		Prompt:    limitText(t.Prompt, 4000),
 		Output:    limitText(t.Output, outputLimit),
 		Error:     limitText(t.Error, 4000),
@@ -100,6 +108,19 @@ func view(t tasks.Task, outputLimit int) taskView {
 			Description: limitText(t.Approval.Description, 2000),
 			Choices:     t.Approval.Choices,
 		}
+	}
+	return v
+}
+
+// startedView is the result of submitting work, explaining a request that
+// could not continue the conversation.
+func startedView(t tasks.Task, outputLimit int) taskView {
+	v := view(t, outputLimit)
+	switch t.Conversation {
+	case tasks.RouteSeparate:
+		v.Note = separateNote
+	case tasks.RouteSeparateExternal:
+		v.Note = separateExternalNote
 	}
 	return v
 }
@@ -119,21 +140,25 @@ func New(manager *tasks.Manager) (*Orchestrator, error) {
 		d.ResponseJsonSchema = nil
 		o.declarations = append(o.declarations, d)
 	}
-	add(functiontool.New(functiontool.Config{Name: "start_task", Description: "Start a Hermes task, question, or web search in the background. Returns admission, not the final answer. Completion is automatically announced during a quiet break; never submit a duplicate just to check progress."}, func(ctx agent.Context, a startArgs) (taskView, error) {
+	add(functiontool.New(functiontool.Config{Name: "start_task", Description: "Start a Hermes task, question, or web search in the background. It continues the current Hermes conversation unless given another session. Returns admission, not the final answer. Completion is automatically announced during a quiet break; never submit a duplicate just to check progress."}, func(ctx agent.Context, a startArgs) (taskView, error) {
 		task, err := manager.Start(ctx, a.Prompt, a.SessionID)
 		if err != nil {
 			// Only a persisted record is genuinely tracked; a failed first write is a real failure.
 			if tracked, ok := manager.Get(task.ID); ok && task.ID != "" {
-				v := view(tracked, 4000)
-				v.Note = "This task is tracked; inspect its status rather than submitting again: " + err.Error()
+				v := startedView(tracked, 4000)
+				v.Note = strings.TrimSpace(v.Note + " This task is tracked; inspect its status rather than submitting again: " + err.Error())
 				return v, nil
 			}
 			return taskView{}, err
 		}
-		return view(task, 4000), nil
+		return startedView(task, 4000), nil
 	}))
-	add(functiontool.New(functiontool.Config{Name: "list_tasks", Description: "List Talker's tracked tasks, results, errors and pending approvals. Use to identify 'that task'; never invent IDs."}, func(ctx agent.Context, a struct{}) (map[string]any, error) {
-		return map[string]any{"tasks": manager.Recent(20)}, nil
+	add(functiontool.New(functiontool.Config{Name: "list_tasks", Description: "List Talker's tracked tasks, results, errors and pending approvals, the current Hermes conversation, and followed sessions. Use to identify 'that task'; never invent IDs."}, func(ctx agent.Context, a struct{}) (map[string]any, error) {
+		result := map[string]any{"tasks": manager.Recent(20), "following": followViews(manager.Follows())}
+		if c, ok := manager.CurrentConversation(); ok {
+			result["conversation"] = conversationView{SessionID: c.SessionID, StartedAt: c.StartedAt.UTC().Format(time.RFC3339), ActiveTask: c.ActiveTask}
+		}
+		return result, nil
 	}))
 	add(functiontool.New(functiontool.Config{Name: "watch_task", Description: "Monitor an existing Hermes run started outside Talker and announce its completion. Requires its exact Hermes run ID; do not invent an ID or create replacement work."}, func(ctx agent.Context, a watchArgs) (taskView, error) {
 		t, err := manager.Watch(ctx, a.RunID)
@@ -168,7 +193,7 @@ func New(manager *tasks.Manager) (*Orchestrator, error) {
 		err := manager.Ack(a.IDs)
 		return map[string]any{"acknowledged": err == nil}, err
 	}))
-	for _, t := range hermesTools(manager) {
+	for _, t := range append(hermesTools(manager), conversationTools(manager)...) {
 		add(t.tool, t.err)
 	}
 	if buildErr != nil {
