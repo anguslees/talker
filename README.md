@@ -190,6 +190,9 @@ go test -race ./...                 # Go: hermes client, task ledger, broker, co
 node --test internal/web/*.test.js  # Browser: resampler, playback, Live protocol, lifecycle
 ```
 
+CI (`.github/workflows/ci.yml`) runs both, plus `go fmt`, `go mod tidy -diff`
+and `go vet`, on every pull request and push to `main`.
+
 Layout:
 
 ```
