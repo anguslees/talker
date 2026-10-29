@@ -5,7 +5,7 @@ go 1.26.6
 require (
 	github.com/gorilla/websocket v1.5.3
 	google.golang.org/adk/v2 v2.6.0
-	google.golang.org/genai v1.74.0
+	google.golang.org/genai v1.77.0
 )
 
 require (
